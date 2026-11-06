@@ -21,7 +21,7 @@ on:
       comando_build:
         description: 'Comando de compilacion. $GAME_DIR y $KEYS (si hay PROD_KEYS) ya existen. Ajustalo con lo que salga en la ayuda'
         required: false
-        default: 'python3 scripts/build_ipa_from_nsp.py "$GAME_DIR"'
+        default: 'python3 scripts/build_ipa_from_nsp.py "$GAME_DIR" --no-keep-extracted'
 
 jobs:
   build:
@@ -74,8 +74,11 @@ jobs:
           xcrun simctl runtime delete all || true
           rm -rf "$HOME/Library/Developer/CoreSimulator" || true
           rm -rf "$HOME/Library/Developer/Xcode/DerivedData" || true
-          rm -rf "$HOME/Library/Caches" || true
           echo "Despues:"; df -h /
+          echo "Comprobando que el Xcode elegido sigue entero:"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --find metal
 
       - name: Dependencias del sistema
         run: |
