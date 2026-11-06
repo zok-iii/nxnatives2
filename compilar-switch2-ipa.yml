@@ -1,0 +1,177 @@
+name: "Compilar juego de Switch 2 (.nup) a IPA"
+
+on:
+  workflow_dispatch:
+    inputs:
+      solo_ayuda:
+        description: 'true = solo imprime la ayuda de los scripts y la doc de Switch 2 (no descarga nada)'
+        required: true
+        default: 'true'
+      nup_url:
+        description: 'Enlace directo al .nup (Dropbox con dl=1)'
+        required: false
+      nup_name:
+        description: 'Nombre del archivo con extension (ej: juego.nup)'
+        required: false
+        default: 'juego.nup'
+      xcode_version:
+        description: 'Version de Xcode que pide el repo (si no existe en el runner usa la 27.x mas nueva)'
+        required: false
+        default: '27.2'
+      comando_build:
+        description: 'Comando de compilacion. $GAME_DIR y $KEYS (si hay PROD_KEYS) ya existen. Ajustalo con lo que salga en la ayuda'
+        required: false
+        default: 'python3 scripts/build_ipa_from_nsp.py "$GAME_DIR"'
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 330
+    steps:
+      - name: Checkout con submodulos
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Diagnostico del entorno
+        run: |
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          python3 --version
+          df -h /
+
+      - name: Seleccionar Xcode
+        env:
+          XV: ${{ inputs.xcode_version }}
+        run: |
+          X="/Applications/Xcode_${XV}.app"
+          if [ ! -d "$X" ]; then
+            echo "No existe $X, busco la 27.x mas nueva"
+            X=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -n 1)
+          fi
+          if [ -z "$X" ] || [ ! -d "$X" ]; then
+            echo "No hay ningun Xcode 27 en el runner"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          echo "Usando: $X"
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+          echo "XCODE_ELEGIDO=$X" >> "$GITHUB_ENV"
+
+      - name: Liberar espacio (lo que no se usa)
+        run: |
+          echo "Antes:"; df -h /
+          # Otros Xcode que no vamos a usar
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$XCODE_ELEGIDO" ]; then
+              echo "Borrando $app"
+              sudo rm -rf "$app" || true
+            fi
+          done
+          # Simuladores y caches de desarrollo (no hacen falta para el IPA)
+          xcrun simctl delete all || true
+          xcrun simctl runtime delete all || true
+          rm -rf "$HOME/Library/Developer/CoreSimulator" || true
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData" || true
+          rm -rf "$HOME/Library/Caches" || true
+          echo "Despues:"; df -h /
+
+      - name: Dependencias del sistema
+        run: |
+          brew install xcodegen zstd glslang
+          brew cleanup --prune=all || true
+
+      - name: Metal Toolchain (solo si falta)
+        run: |
+          if ! xcrun --find metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain || echo "downloadComponent fallo, sigo"
+          fi
+          xcrun --find metal || echo "AVISO: no se encontro metal"
+
+      - name: Dependencias de Python
+        run: |
+          python3 -m pip install --break-system-packages \
+            lz4 "capstone>=5,<6" fonttools nsz zbic \
+            "backports.zstd; python_version < '3.14'"
+
+      - name: Ayuda de los scripts y doc de Switch 2
+        run: |
+          echo "===== build_ipa_from_nsp.py --help ====="
+          python3 scripts/build_ipa_from_nsp.py --help || true
+          echo "===== pack_dump.py --help ====="
+          python3 scripts/pack_dump.py --help || true
+          echo "===== menciones de .nup / Switch 2 / Xcode en README y docs ====="
+          grep -rniE "\.nup|switch 2|xcode" README.md docs/*.md | head -n 80 || true
+
+      - name: Preparar claves (si hay) y descargar el .nup
+        if: ${{ inputs.solo_ayuda != 'true' }}
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+          NUP_URL: ${{ inputs.nup_url }}
+          NUP_NAME: ${{ inputs.nup_name }}
+        run: |
+          mkdir -p "$HOME/keys" "$HOME/Games/Switch2"
+          if [ -n "$PROD_KEYS" ]; then
+            printf '%s\n' "$PROD_KEYS" > "$HOME/keys/prod.keys"
+            wc -c "$HOME/keys/prod.keys"
+          else
+            echo "Sin PROD_KEYS: sigo sin claves"
+          fi
+
+          echo "Descargando .nup..."
+          curl -fL -o "$HOME/Games/Switch2/$NUP_NAME" "$NUP_URL"
+          SIZE=$(stat -f%z "$HOME/Games/Switch2/$NUP_NAME")
+          echo "Tamano: $SIZE bytes"
+          if [ "$SIZE" -lt 100000000 ]; then
+            echo "ERROR: archivo demasiado pequeno, probablemente no es el juego"
+            head -c 300 "$HOME/Games/Switch2/$NUP_NAME"
+            exit 1
+          fi
+          ls -lh "$HOME/Games/Switch2"
+          df -h /
+
+      - name: Compilar IPA
+        if: ${{ inputs.solo_ayuda != 'true' }}
+        env:
+          COMANDO: ${{ inputs.comando_build }}
+        run: |
+          export GAME_DIR="$HOME/Games/Switch2"
+          export KEYS="$HOME/keys/prod.keys"
+          echo "Ejecutando: $COMANDO"
+          eval "$COMANDO"
+
+      - name: Borrar el .nup (ya cumplio su funcion)
+        if: ${{ inputs.solo_ayuda != 'true' }}
+        env:
+          NUP_NAME: ${{ inputs.nup_name }}
+        run: |
+          rm -f "$HOME/Games/Switch2/$NUP_NAME"
+          rm -f "$HOME/keys/prod.keys"
+          df -h /
+
+      - name: Mover el IPA (sin duplicarlo)
+        if: ${{ inputs.solo_ayuda != 'true' }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find "$HOME/Games" -name '*.ipa' -exec mv {} "$GITHUB_WORKSPACE/out/" \;
+          ls -lh "$GITHUB_WORKSPACE/out"
+          # Todo lo demas de la compilacion ya no hace falta
+          du -sh "$HOME"/Games/Switch2/* 2>/dev/null || true
+          rm -rf "$HOME/Games/Switch2"
+          df -h /
+
+      - name: Log del error
+        if: ${{ failure() }}
+        run: |
+          df -h /
+          find "$HOME/Games" -name '*.log' -exec sh -c 'echo "== $1 =="; tail -n 60 "$1"' _ {} \; || true
+
+      - name: Subir IPA como artefacto
+        if: ${{ inputs.solo_ayuda != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Switch2-IPA
+          path: out/*.ipa
+          retention-days: 1
+          if-no-files-found: error
