@@ -126,8 +126,15 @@ jobs:
           DEST="$HOME/Games/Switch2/$NUP_NAME"
           for i in $(seq 1 40); do
             echo "Intento $i, ya descargado: $( [ -f "$DEST" ] && stat -f%z "$DEST" || echo 0 ) bytes"
-            curl -fL -sS -C - --retry 5 --retry-delay 10 --retry-all-errors \
-              --connect-timeout 30 -o "$DEST" "$NUP_URL" && { echo "Descarga completa"; break; }
+            curl -fL -sS --http1.1 -C - --connect-timeout 30 \
+              --speed-limit 100000 --speed-time 60 \
+              -o "$DEST" "$NUP_URL" &
+            CPID=$!
+            while kill -0 "$CPID" 2>/dev/null; do
+              sleep 30
+              echo "  [$(date +%H:%M:%S)] $( [ -f "$DEST" ] && stat -f%z "$DEST" || echo 0 ) bytes"
+            done
+            wait "$CPID" && { echo "Descarga completa"; break; }
             CODE=$?
             echo "curl termino con codigo $CODE"
             # 33 = el servidor rechazo el rango: normalmente ya estaba completo
