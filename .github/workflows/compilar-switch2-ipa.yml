@@ -122,8 +122,18 @@ jobs:
             echo "Sin PROD_KEYS: sigo sin claves"
           fi
 
-          echo "Descargando .nup..."
-          curl -fL -o "$HOME/Games/Switch2/$NUP_NAME" "$NUP_URL"
+          echo "Descargando .nup (con reintentos y reanudacion)..."
+          DEST="$HOME/Games/Switch2/$NUP_NAME"
+          for i in $(seq 1 40); do
+            echo "Intento $i, ya descargado: $( [ -f "$DEST" ] && stat -f%z "$DEST" || echo 0 ) bytes"
+            curl -fL -sS -C - --retry 5 --retry-delay 10 --retry-all-errors \
+              --connect-timeout 30 -o "$DEST" "$NUP_URL" && { echo "Descarga completa"; break; }
+            CODE=$?
+            echo "curl termino con codigo $CODE"
+            # 33 = el servidor rechazo el rango: normalmente ya estaba completo
+            if [ "$CODE" -eq 33 ]; then echo "Codigo 33: lo doy por completo y reviso el tamano"; break; fi
+            sleep 15
+          done
           SIZE=$(stat -f%z "$HOME/Games/Switch2/$NUP_NAME")
           echo "Tamano: $SIZE bytes"
           if [ "$SIZE" -lt 100000000 ]; then
